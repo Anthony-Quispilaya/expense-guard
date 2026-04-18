@@ -68,9 +68,12 @@ app.listen(PORT, () => {
   logger.info(`Backend running on http://localhost:${PORT}`);
   logger.info(`Environment: ${env.NODE_ENV}`);
   logger.info(`Supabase URL: ${env.SUPABASE_URL}`);
-  logger.info(
-    `Photon platform: ${process.platform === "darwin" ? "macOS — real sends enabled" : `${process.platform} — sends will be logged only`}`
-  );
+  const photonMode = env.PHOTON_ADDRESS
+    ? `gRPC → ${env.PHOTON_ADDRESS} (iMessage from any platform ✓)`
+    : process.platform === "darwin"
+    ? "macOS legacy — real sends enabled"
+    : `${process.platform} — set PHOTON_ADDRESS+PHOTON_TOKEN for iMessage`;
+  logger.info(`Photon: ${photonMode}`);
 });
 
 export default app;

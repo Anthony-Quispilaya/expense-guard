@@ -101,7 +101,6 @@ export default function LinkAccounts() {
         sessionId,
         clientId: CLIENT_ID,
         environment: KNOT_ENV,
-        product: "transaction_link",
         merchantIds: [merchantId],
         entryPoint: "link_accounts",
         useCategories: false,

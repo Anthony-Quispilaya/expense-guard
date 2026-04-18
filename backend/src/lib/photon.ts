@@ -1,13 +1,18 @@
 /**
  * Photon alert service.
  *
- * Alert channels:
- *   1. Discord webhook  — works on ALL platforms (Linux/WSL2/macOS)
- *                         fires whenever DISCORD_WEBHOOK_URL is set in .env
- *   2. iMessage via Photon SDK — macOS only, requires @photon-ai/imessage-kit
+ * Alert channels (tried in order):
+ *   1. iMessage via @photon-ai/advanced-imessage (gRPC to a remote Mac instance)
+ *        → Works from any platform (Linux/WSL2/macOS) as long as PHOTON_ADDRESS
+ *          and PHOTON_TOKEN are configured and a Photon instance is running on Mac.
+ *   2. Discord webhook — works everywhere, used as fallback / parallel channel.
+ *   3. Legacy @photon-ai/imessage-kit — macOS-only local fallback if no gRPC config.
  *
- * Both channels are attempted independently. The Supabase alert record
- * reflects the best outcome across channels.
+ * Configure in backend/.env:
+ *   PHOTON_ADDRESS=your-instance.imsg.photon.codes:443
+ *   PHOTON_TOKEN=your-lightauth-token
+ *   PHOTON_TEST_NUMBER=+15512367940       (E.164, destination phone)
+ *   DISCORD_WEBHOOK_URL=https://...       (optional second channel)
  */
 
 import { getEnv } from "./env";
@@ -26,7 +31,67 @@ export interface AlertPayload {
   recipient: string;
 }
 
-// ── Discord color palette ──────────────────────────────────────────────────────
+// ── Message text builder ───────────────────────────────────────────────────────
+
+function buildAlertMessage(
+  transaction: Transaction,
+  policyResult: PolicyResult
+): string {
+  const merchant = transaction.merchant_name ?? "Unknown Merchant";
+  const amount = `$${Number(transaction.amount).toFixed(2)}`;
+  const cls = policyResult.classification.replace(/_/g, " ").toUpperCase();
+  const topReason = (policyResult.reasons as string[])[0] ?? "Policy rule triggered";
+  const icon =
+    policyResult.classification === "likely_personal"
+      ? "🚨"
+      : policyResult.classification === "suspicious"
+      ? "⚠️"
+      : "✅";
+
+  return [
+    `${icon} ExpenseGuard Alert`,
+    "",
+    `Merchant: ${merchant}`,
+    `Amount:   ${amount}`,
+    `Status:   ${cls}`,
+    `Reason:   ${topReason}`,
+    "",
+    policyResult.requires_review
+      ? "⚡ Action required — please review in ExpenseGuard."
+      : "No action needed.",
+  ].join("\n");
+}
+
+// ── iMessage via @photon-ai/advanced-imessage (gRPC, works from WSL2) ─────────
+
+async function sendPhotonAdvanced(
+  recipient: string,
+  message: string,
+  address: string,
+  token: string
+): Promise<"sent" | "failed"> {
+  try {
+    const { createClient, directChat } = await import(
+      "@photon-ai/advanced-imessage"
+    );
+
+    const im = createClient({ address, token, tls: true });
+    try {
+      await im.messages.send(directChat(recipient), message);
+      logger.info({ recipient }, "Photon iMessage sent ✓");
+      return "sent";
+    } finally {
+      await im.close();
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ err, recipient }, `Photon advanced iMessage failed: ${msg}`);
+    return "failed";
+  }
+}
+
+// ── Discord webhook ────────────────────────────────────────────────────────────
+
 const DISCORD_COLORS = {
   likely_personal: 0xef4444,
   suspicious: 0xf59e0b,
@@ -38,29 +103,6 @@ const DISCORD_EMOJI = {
   suspicious: "⚠️",
   approved: "✅",
 } as const;
-
-function buildAlertMessage(
-  transaction: Transaction,
-  policyResult: PolicyResult
-): string {
-  const merchant = transaction.merchant_name ?? "Unknown Merchant";
-  const amount = `$${Number(transaction.amount).toFixed(2)}`;
-  const classification = policyResult.classification.replace("_", " ");
-  const topReason = (policyResult.reasons as string[])[0] ?? "Policy rule triggered";
-
-  return [
-    "Expense Alert",
-    "",
-    `Merchant: ${merchant}`,
-    `Amount: ${amount}`,
-    `Classification: ${classification}`,
-    `Reason: ${topReason}`,
-    "",
-    "Please review this business expense.",
-  ].join("\n");
-}
-
-// ── Discord webhook ────────────────────────────────────────────────────────────
 
 async function sendDiscordAlert(
   transaction: Transaction,
@@ -106,7 +148,7 @@ async function sendDiscordAlert(
       return "failed";
     }
 
-    logger.info({ merchant, amount, classification: cls }, "Discord alert sent ✓");
+    logger.info({ merchant, amount, cls }, "Discord alert sent ✓");
     return "sent";
   } catch (err) {
     logger.error({ err }, "Discord webhook fetch failed");
@@ -114,7 +156,26 @@ async function sendDiscordAlert(
   }
 }
 
-// ── Main alert entry point ─────────────────────────────────────────────────────
+// ── Legacy macOS-only fallback ─────────────────────────────────────────────────
+
+async function sendPhotonLegacy(
+  recipient: string,
+  message: string
+): Promise<"sent" | "failed"> {
+  if (process.platform !== "darwin") return "failed";
+  try {
+    const { IMessageSDK } = await import("@photon-ai/imessage-kit");
+    const sdk = new IMessageSDK();
+    await sdk.send(recipient, message);
+    logger.info({ recipient }, "Photon iMessage (legacy) sent ✓");
+    return "sent";
+  } catch (err) {
+    logger.error({ err }, "Photon legacy iMessage send failed");
+    return "failed";
+  }
+}
+
+// ── Main entry point ───────────────────────────────────────────────────────────
 
 export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
   const { transaction, policyResult, recipient } = payload;
@@ -127,10 +188,13 @@ export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
     "Preparing to send policy alert"
   );
 
+  // Determine which channel will be primary for the DB record
+  const primaryChannel = env.PHOTON_ADDRESS ? "imessage" : env.DISCORD_WEBHOOK_URL ? "discord" : "imessage";
+
   const alert = await insertAlert({
     transaction_id: transaction.id!,
     policy_result_id: policyResult.id!,
-    channel: "discord",
+    channel: primaryChannel,
     recipient,
     status: "skipped",
     message_body: messageBody,
@@ -144,39 +208,42 @@ export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
   let finalStatus: Alert["status"] = "skipped";
   let errorMessage: string | undefined;
 
-  // ── Channel 1: Discord webhook (works on all platforms) ──────────────────────
+  // ── Channel 1: Photon advanced iMessage (gRPC — works from WSL2/Linux) ────────
+  if (env.PHOTON_ADDRESS && env.PHOTON_TOKEN) {
+    logger.info({ recipient, address: env.PHOTON_ADDRESS }, "Sending Photon iMessage (gRPC)");
+    const result = await sendPhotonAdvanced(recipient, messageBody, env.PHOTON_ADDRESS, env.PHOTON_TOKEN);
+    finalStatus = result;
+    if (result === "failed") errorMessage = "Photon gRPC send failed";
+  }
+
+  // ── Channel 2: Discord webhook (parallel channel, or fallback if no Photon) ──
   if (env.DISCORD_WEBHOOK_URL) {
     logger.info({ transactionId: transaction.id }, "Sending Discord alert");
     const discordResult = await sendDiscordAlert(transaction, policyResult, env.DISCORD_WEBHOOK_URL);
-    finalStatus = discordResult;
-    if (discordResult === "failed") {
-      errorMessage = "Discord webhook failed";
+    // Treat Discord success as overall success even if Photon failed
+    if (discordResult === "sent") {
+      finalStatus = "sent";
+      errorMessage = undefined;
+    } else if (finalStatus !== "sent") {
+      errorMessage = (errorMessage ? errorMessage + "; " : "") + "Discord webhook failed";
     }
   }
 
-  // ── Channel 2: iMessage via Photon SDK (macOS only) ──────────────────────────
-  const isMacOS = process.platform === "darwin";
-
-  if (isMacOS) {
-    try {
-      const { IMessageSDK } = await import("@photon-ai/imessage-kit");
-      const sdk = new IMessageSDK();
-      logger.info({ recipient }, "Sending Photon iMessage");
-      await sdk.send(recipient, messageBody);
+  // ── Channel 3: Legacy macOS iMessage (last resort) ────────────────────────────
+  if (finalStatus !== "sent" && process.platform === "darwin") {
+    logger.info({ recipient }, "Trying legacy Photon iMessage (macOS only)");
+    const legacyResult = await sendPhotonLegacy(recipient, messageBody);
+    if (legacyResult === "sent") {
       finalStatus = "sent";
-      logger.info({}, "Photon iMessage sent ✓");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ err }, "Photon iMessage send failed");
-      if (finalStatus !== "sent") {
-        finalStatus = "failed";
-        errorMessage = msg;
-      }
+      errorMessage = undefined;
     }
-  } else if (!env.DISCORD_WEBHOOK_URL) {
+  }
+
+  // ── No channel available ───────────────────────────────────────────────────────
+  if (finalStatus === "skipped" && !env.PHOTON_ADDRESS && !env.DISCORD_WEBHOOK_URL && process.platform !== "darwin") {
     logger.warn(
       { platform: process.platform, messageBody },
-      "PHOTON: No macOS and no DISCORD_WEBHOOK_URL — alert logged only:\n" + messageBody
+      "No alert channel configured — set PHOTON_ADDRESS+PHOTON_TOKEN or DISCORD_WEBHOOK_URL:\n" + messageBody
     );
     finalStatus = "platform_unsupported";
   }
