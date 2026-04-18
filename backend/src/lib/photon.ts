@@ -1,18 +1,17 @@
 /**
- * Photon alert service.
+ * Photon alert service — iMessage via spectrum-ts (Photon's official SDK).
  *
- * Alert channels (tried in order):
- *   1. iMessage via @photon-ai/advanced-imessage (gRPC to a remote Mac instance)
- *        → Works from any platform (Linux/WSL2/macOS) as long as PHOTON_ADDRESS
- *          and PHOTON_TOKEN are configured and a Photon instance is running on Mac.
- *   2. Discord webhook — works everywhere, used as fallback / parallel channel.
- *   3. Legacy @photon-ai/imessage-kit — macOS-only local fallback if no gRPC config.
+ * spectrum-ts handles auth, token rotation, and gRPC transport automatically.
+ * You only need two env variables:
+ *   PHOTON_PROJECT_ID      — from https://photon.codes/dashboard → project Settings
+ *   PHOTON_PROJECT_SECRET  — same page, below the project ID
  *
- * Configure in backend/.env:
- *   PHOTON_ADDRESS=your-instance.imsg.photon.codes:443
- *   PHOTON_TOKEN=your-lightauth-token
- *   PHOTON_TEST_NUMBER=+15512367940       (E.164, destination phone)
- *   DISCORD_WEBHOOK_URL=https://...       (optional second channel)
+ * On first send, we lazily initialise a single Spectrum app instance with the
+ * iMessage cloud provider and reuse it for the lifetime of the process.
+ *
+ * Alert channels (all that succeed run — they don't short-circuit each other):
+ *   1. iMessage via spectrum-ts  — real iMessage on your phone
+ *   2. Discord webhook           — rich embed to the DISCORD_WEBHOOK_URL channel
  */
 
 import { getEnv } from "./env";
@@ -29,6 +28,67 @@ export interface AlertPayload {
   transaction: Transaction;
   policyResult: PolicyResult;
   recipient: string;
+}
+
+// ── Spectrum app singleton ─────────────────────────────────────────────────────
+// spectrum-ts is ESM-only; we use `await import()` and cache the resolved app.
+
+type SpectrumApp = import("spectrum-ts").SpectrumInstance;
+type IMessageNarrow = import("spectrum-ts/providers/imessage").IMessageInstance;
+
+interface SpectrumBundle {
+  app: SpectrumApp;
+  imessageFn: (app: SpectrumApp) => IMessageNarrow;
+  text: (s: string) => import("spectrum-ts").ContentInput;
+}
+
+let _spectrumPromise: Promise<SpectrumBundle> | null = null;
+
+async function getSpectrum(
+  projectId: string,
+  projectSecret: string
+): Promise<SpectrumBundle> {
+  if (_spectrumPromise) return _spectrumPromise;
+
+  _spectrumPromise = (async () => {
+    logger.info({ projectId }, "[Photon] Initialising spectrum-ts (iMessage cloud)");
+    const { Spectrum, text } = await import("spectrum-ts");
+    const { imessage } = await import("spectrum-ts/providers/imessage");
+
+    const app = await Spectrum({
+      projectId,
+      projectSecret,
+      providers: [imessage.config()],
+    });
+
+    logger.info("[Photon] spectrum-ts app ready ✓");
+    // `imessage` is a callable that narrows a Spectrum app -> IMessageInstance.
+    // The cast is needed because our shim types simplify the real generic signature.
+    return {
+      app,
+      imessageFn: imessage as unknown as (app: SpectrumApp) => IMessageNarrow,
+      text,
+    };
+  })().catch((err) => {
+    _spectrumPromise = null; // reset on failure so the next call retries
+    throw err;
+  });
+
+  return _spectrumPromise;
+}
+
+/** Graceful shutdown — called from index.ts on SIGINT/SIGTERM. */
+export async function stopSpectrum(): Promise<void> {
+  if (!_spectrumPromise) return;
+  try {
+    const { app } = await _spectrumPromise;
+    await app.stop();
+    logger.info("[Photon] spectrum-ts stopped cleanly");
+  } catch (err) {
+    logger.error({ err }, "[Photon] Error stopping spectrum-ts");
+  } finally {
+    _spectrumPromise = null;
+  }
 }
 
 // ── Message text builder ───────────────────────────────────────────────────────
@@ -62,31 +122,49 @@ function buildAlertMessage(
   ].join("\n");
 }
 
-// ── iMessage via @photon-ai/advanced-imessage (gRPC, works from WSL2) ─────────
+// ── iMessage via spectrum-ts ───────────────────────────────────────────────────
 
-async function sendPhotonAdvanced(
+/**
+ * Send an iMessage to a phone number (E.164, e.g. +15551234567).
+ * Exposed for the /api/photon/test diagnostic endpoint.
+ */
+export async function sendIMessage(
   recipient: string,
-  message: string,
-  address: string,
-  token: string
-): Promise<"sent" | "failed"> {
+  message: string
+): Promise<{ status: "sent" | "failed"; error?: string; durationMs: number }> {
+  const env = getEnv();
+  const start = Date.now();
+
+  if (!env.PHOTON_PROJECT_ID || !env.PHOTON_PROJECT_SECRET) {
+    return {
+      status: "failed",
+      error: "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are not set",
+      durationMs: 0,
+    };
+  }
+
   try {
-    const { createClient, directChat } = await import(
-      "@photon-ai/advanced-imessage"
+    logger.info({ recipient }, "[Photon] Sending iMessage via spectrum-ts");
+    const { app, imessageFn, text } = await getSpectrum(
+      env.PHOTON_PROJECT_ID,
+      env.PHOTON_PROJECT_SECRET
     );
 
-    const im = createClient({ address, token, tls: true });
-    try {
-      await im.messages.send(directChat(recipient), message);
-      logger.info({ recipient }, "Photon iMessage sent ✓");
-      return "sent";
-    } finally {
-      await im.close();
-    }
+    const im = imessageFn(app);
+    const user = await im.user(recipient);
+    const space = await im.space(user);
+    await space.send(text(message));
+
+    const durationMs = Date.now() - start;
+    logger.info({ recipient, durationMs }, "[Photon] iMessage sent ✓");
+    return { status: "sent", durationMs };
   } catch (err) {
+    const durationMs = Date.now() - start;
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err, recipient }, `Photon advanced iMessage failed: ${msg}`);
-    return "failed";
+    logger.error({ err, recipient, durationMs }, `[Photon] iMessage send failed: ${msg}`);
+    // Nuke the cached app so the next attempt reconnects with a fresh token.
+    _spectrumPromise = null;
+    return { status: "failed", error: msg, durationMs };
   }
 }
 
@@ -143,34 +221,14 @@ async function sendDiscordAlert(
     });
 
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      logger.error({ status: res.status, body }, "Discord webhook returned error");
+      logger.error({ status: res.status }, "[Discord] Webhook returned error");
       return "failed";
     }
 
-    logger.info({ merchant, amount, cls }, "Discord alert sent ✓");
+    logger.info({ merchant, cls }, "[Discord] Alert sent ✓");
     return "sent";
   } catch (err) {
-    logger.error({ err }, "Discord webhook fetch failed");
-    return "failed";
-  }
-}
-
-// ── Legacy macOS-only fallback ─────────────────────────────────────────────────
-
-async function sendPhotonLegacy(
-  recipient: string,
-  message: string
-): Promise<"sent" | "failed"> {
-  if (process.platform !== "darwin") return "failed";
-  try {
-    const { IMessageSDK } = await import("@photon-ai/imessage-kit");
-    const sdk = new IMessageSDK();
-    await sdk.send(recipient, message);
-    logger.info({ recipient }, "Photon iMessage (legacy) sent ✓");
-    return "sent";
-  } catch (err) {
-    logger.error({ err }, "Photon legacy iMessage send failed");
+    logger.error({ err }, "[Discord] Webhook fetch failed");
     return "failed";
   }
 }
@@ -180,16 +238,18 @@ async function sendPhotonLegacy(
 export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
   const { transaction, policyResult, recipient } = payload;
   const env = getEnv();
-
   const messageBody = buildAlertMessage(transaction, policyResult);
 
   logger.info(
     { transactionId: transaction.id, recipient, classification: policyResult.classification },
-    "Preparing to send policy alert"
+    "[Alert] Preparing to send policy alert"
   );
 
-  // Determine which channel will be primary for the DB record
-  const primaryChannel = env.PHOTON_ADDRESS ? "imessage" : env.DISCORD_WEBHOOK_URL ? "discord" : "imessage";
+  const primaryChannel: Alert["channel"] = env.PHOTON_PROJECT_ID
+    ? "imessage"
+    : env.DISCORD_WEBHOOK_URL
+    ? "discord"
+    : "imessage";
 
   const alert = await insertAlert({
     transaction_id: transaction.id!,
@@ -201,52 +261,46 @@ export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
   });
 
   if (policyResult.classification === "approved") {
-    logger.info({ transactionId: transaction.id }, "Transaction approved — no alert sent");
+    logger.info({ transactionId: transaction.id }, "[Alert] Transaction approved — no alert sent");
     return { ...alert, status: "skipped" };
   }
 
   let finalStatus: Alert["status"] = "skipped";
-  let errorMessage: string | undefined;
+  const errors: string[] = [];
 
-  // ── Channel 1: Photon advanced iMessage (gRPC — works from WSL2/Linux) ────────
-  if (env.PHOTON_ADDRESS && env.PHOTON_TOKEN) {
-    logger.info({ recipient, address: env.PHOTON_ADDRESS }, "Sending Photon iMessage (gRPC)");
-    const result = await sendPhotonAdvanced(recipient, messageBody, env.PHOTON_ADDRESS, env.PHOTON_TOKEN);
-    finalStatus = result;
-    if (result === "failed") errorMessage = "Photon gRPC send failed";
+  // iMessage via spectrum-ts
+  if (env.PHOTON_PROJECT_ID && env.PHOTON_PROJECT_SECRET) {
+    const result = await sendIMessage(recipient, messageBody);
+    if (result.status === "sent") {
+      finalStatus = "sent";
+    } else if (result.error) {
+      errors.push(`iMessage: ${result.error}`);
+    }
   }
 
-  // ── Channel 2: Discord webhook (parallel channel, or fallback if no Photon) ──
+  // Discord webhook (runs in parallel — both channels fire if configured)
   if (env.DISCORD_WEBHOOK_URL) {
-    logger.info({ transactionId: transaction.id }, "Sending Discord alert");
-    const discordResult = await sendDiscordAlert(transaction, policyResult, env.DISCORD_WEBHOOK_URL);
-    // Treat Discord success as overall success even if Photon failed
+    const discordResult = await sendDiscordAlert(
+      transaction,
+      policyResult,
+      env.DISCORD_WEBHOOK_URL
+    );
     if (discordResult === "sent") {
       finalStatus = "sent";
-      errorMessage = undefined;
-    } else if (finalStatus !== "sent") {
-      errorMessage = (errorMessage ? errorMessage + "; " : "") + "Discord webhook failed";
+    } else {
+      errors.push("Discord webhook failed");
     }
   }
 
-  // ── Channel 3: Legacy macOS iMessage (last resort) ────────────────────────────
-  if (finalStatus !== "sent" && process.platform === "darwin") {
-    logger.info({ recipient }, "Trying legacy Photon iMessage (macOS only)");
-    const legacyResult = await sendPhotonLegacy(recipient, messageBody);
-    if (legacyResult === "sent") {
-      finalStatus = "sent";
-      errorMessage = undefined;
-    }
-  }
-
-  // ── No channel available ───────────────────────────────────────────────────────
-  if (finalStatus === "skipped" && !env.PHOTON_ADDRESS && !env.DISCORD_WEBHOOK_URL && process.platform !== "darwin") {
+  if (finalStatus === "skipped") {
     logger.warn(
       { platform: process.platform, messageBody },
-      "No alert channel configured — set PHOTON_ADDRESS+PHOTON_TOKEN or DISCORD_WEBHOOK_URL:\n" + messageBody
+      "[Alert] No channel sent — set PHOTON_PROJECT_ID+PHOTON_PROJECT_SECRET or DISCORD_WEBHOOK_URL"
     );
     finalStatus = "platform_unsupported";
   }
+
+  const errorMessage = errors.length > 0 ? errors.join("; ") : undefined;
 
   await updateAlert(alert.id!, {
     status: finalStatus,
@@ -257,10 +311,7 @@ export async function sendPolicyAlert(payload: AlertPayload): Promise<Alert> {
   return { ...alert, status: finalStatus, error_message: errorMessage };
 }
 
-/**
- * Manual replay: resend alert for a previously flagged transaction.
- */
 export async function replayAlert(payload: AlertPayload): Promise<Alert> {
-  logger.info({ transactionId: payload.transaction.id }, "Replaying alert");
+  logger.info({ transactionId: payload.transaction.id }, "[Alert] Replaying alert");
   return sendPolicyAlert(payload);
 }

@@ -37,6 +37,7 @@ app.use(express.urlencoded({ extended: true }));
 
 import reviewsRouter from "./routes/reviews";
 import policyRouter from "./routes/policy";
+import photonRouter from "./routes/photon";
 
 // Routes
 app.use("/", healthRouter);
@@ -44,6 +45,7 @@ app.use("/api/knot", knotRouter);
 app.use("/api/demo", demoRouter);
 app.use("/api/reviews", reviewsRouter);
 app.use("/api/policy", policyRouter);
+app.use("/api/photon", photonRouter);
 
 // 404 catch-all
 app.use((_req, res) => {
@@ -64,16 +66,34 @@ app.use(
 );
 
 const PORT = env.PORT;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`Backend running on http://localhost:${PORT}`);
   logger.info(`Environment: ${env.NODE_ENV}`);
   logger.info(`Supabase URL: ${env.SUPABASE_URL}`);
-  const photonMode = env.PHOTON_ADDRESS
-    ? `gRPC → ${env.PHOTON_ADDRESS} (iMessage from any platform ✓)`
-    : process.platform === "darwin"
-    ? "macOS legacy — real sends enabled"
-    : `${process.platform} — set PHOTON_ADDRESS+PHOTON_TOKEN for iMessage`;
-  logger.info(`Photon: ${photonMode}`);
+  const photonMode = env.PHOTON_PROJECT_ID
+    ? `spectrum-ts cloud (project ${env.PHOTON_PROJECT_ID.slice(0, 8)}…) ✓`
+    : `not configured — set PHOTON_PROJECT_ID+PHOTON_PROJECT_SECRET`;
+  logger.info(`Photon iMessage: ${photonMode}`);
+  logger.info(`Discord webhook: ${env.DISCORD_WEBHOOK_URL ? "configured ✓" : "not set"}`);
 });
+
+// ── Graceful shutdown — close Spectrum connections on SIGINT/SIGTERM ───────
+async function shutdown(signal: string): Promise<void> {
+  logger.info({ signal }, "Shutdown requested");
+  try {
+    const { stopSpectrum } = await import("./lib/photon");
+    await stopSpectrum();
+  } catch (err) {
+    logger.error({ err }, "Error during spectrum shutdown");
+  }
+  server.close(() => {
+    logger.info("HTTP server closed — exiting");
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 5000).unref();
+}
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 export default app;

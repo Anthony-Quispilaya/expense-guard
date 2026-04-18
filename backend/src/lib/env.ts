@@ -19,8 +19,10 @@ const envSchema = z.object({
     .enum(["development", "production"])
     .default("development"),
   PHOTON_TEST_NUMBER: z.string().min(1, "PHOTON_TEST_NUMBER is required"),
-  PHOTON_ADDRESS: z.string().optional(),
-  PHOTON_TOKEN: z.string().optional(),
+  // Photon cloud credentials — get from https://photon.codes/dashboard
+  // These are the "client ID" and "secret" shown on your project page.
+  PHOTON_PROJECT_ID: z.string().optional(),
+  PHOTON_PROJECT_SECRET: z.string().optional(),
   DISCORD_WEBHOOK_URL: z.string().url().optional(),
   APP_BASE_URL: z.string().url().default("http://localhost:5173"),
   WEBHOOK_BASE_URL: z.string().optional(),

@@ -122,7 +122,21 @@ async function knotFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const env = getEnv();
   const url = `${getBaseUrl()}${path}`;
+  const method = options.method ?? "GET";
+
+  // Log full request details
+  let bodyPreview: unknown = undefined;
+  if (options.body && typeof options.body === "string") {
+    try { bodyPreview = JSON.parse(options.body); } catch { bodyPreview = options.body; }
+  }
+  logger.info(
+    { url, method, env: env.KNOT_ENVIRONMENT, clientId: env.KNOT_CLIENT_ID, body: bodyPreview },
+    `[Knot] → ${method} ${path}`
+  );
+
+  const start = Date.now();
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -133,17 +147,25 @@ async function knotFetch<T>(
   });
 
   const text = await response.text();
-  logger.debug({ url, status: response.status }, "Knot API call");
+  const ms = Date.now() - start;
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { parsed = text; }
 
   if (!response.ok) {
-    throw new Error(`Knot API error ${response.status} at ${path}: ${text}`);
+    logger.error(
+      { url, method, status: response.status, ms, response: parsed },
+      `[Knot] ✗ ${response.status} ${method} ${path}`
+    );
+    throw new Error(`Knot API ${response.status} at ${path}: ${text}`);
   }
 
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error(`Knot API non-JSON response at ${path}: ${text}`);
-  }
+  logger.info(
+    { url, method, status: response.status, ms, response: parsed },
+    `[Knot] ✓ ${response.status} ${method} ${path}`
+  );
+
+  return parsed as T;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -212,6 +234,22 @@ export async function getKnotTransactionById(
 ): Promise<KnotTransaction> {
   logger.info({ transactionId }, "Fetching Knot transaction by ID");
   return knotFetch<KnotTransaction>(`/transactions/${transactionId}`);
+}
+
+/**
+ * GET /accounts?external_user_id=...
+ * Returns all linked merchant accounts for a user with their connection status.
+ */
+export async function getKnotAccounts(externalUserId: string): Promise<unknown[]> {
+  logger.info({ externalUserId }, "[Knot] Fetching accounts");
+  const result = await knotFetch<{ accounts?: unknown[] } | unknown[]>(
+    `/merchant/accounts?external_user_id=${encodeURIComponent(externalUserId)}`
+  );
+  if (Array.isArray(result)) return result;
+  if (result && typeof result === "object" && "accounts" in result) {
+    return (result as { accounts?: unknown[] }).accounts ?? [];
+  }
+  return [];
 }
 
 /**

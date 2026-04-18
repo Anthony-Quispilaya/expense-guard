@@ -217,21 +217,35 @@ export default function LinkAccounts() {
         </div>
         {KNOT_ENV === "development" && (
           <div style={{ color: "var(--text)", lineHeight: 1.7 }}>
-            Real merchant logins only work in <strong>production</strong>. In dev, use Knot's test credentials inside the SDK modal:
-            <div style={{ marginTop: 10, display: "flex", gap: 24, flexWrap: "wrap" }}>
-              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 16px" }}>
-                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 4 }}>GENERATES NEW TRANSACTIONS</div>
-                <div><span style={{ color: "var(--muted)" }}>Username:</span> <code style={{ background: "var(--surface2)", padding: "2px 6px", borderRadius: 4 }}>user_good_transactions</code></div>
-                <div style={{ marginTop: 4 }}><span style={{ color: "var(--muted)" }}>Password:</span> <code style={{ background: "var(--surface2)", padding: "2px 6px", borderRadius: 4 }}>pass_good</code></div>
+            <div style={{ marginBottom: 10 }}>
+              Click <strong>Link Account</strong> on any merchant below → Knot opens a login modal → enter these test credentials:
+            </div>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", minWidth: 260 }}>
+                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 8 }}>STANDARD — ~205 new transactions</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)", width: 70 }}>Username</span>
+                  <code style={{ background: "var(--surface2)", padding: "3px 8px", borderRadius: 4, fontSize: 12, userSelect: "all" }}>user_good_transactions</code>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)", width: 70 }}>Password</span>
+                  <code style={{ background: "var(--surface2)", padding: "3px 8px", borderRadius: 4, fontSize: 12, userSelect: "all" }}>pass_good</code>
+                </div>
               </div>
-              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 16px" }}>
-                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 4 }}>NEW + UPDATED TRANSACTIONS</div>
-                <div><span style={{ color: "var(--muted)" }}>Username:</span> <code style={{ background: "var(--surface2)", padding: "2px 6px", borderRadius: 4 }}>user_good_transactions</code></div>
-                <div style={{ marginTop: 4 }}><span style={{ color: "var(--muted)" }}>Password:</span> <code style={{ background: "var(--surface2)", padding: "2px 6px", borderRadius: 4 }}>pass_good_updates</code></div>
+              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px", minWidth: 260 }}>
+                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 8 }}>WITH UPDATES — new + updated transactions</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)", width: 70 }}>Username</span>
+                  <code style={{ background: "var(--surface2)", padding: "3px 8px", borderRadius: 4, fontSize: 12, userSelect: "all" }}>user_good_transactions</code>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)", width: 70 }}>Password</span>
+                  <code style={{ background: "var(--surface2)", padding: "3px 8px", borderRadius: 4, fontSize: 12, userSelect: "all" }}>pass_good_updates</code>
+                </div>
               </div>
             </div>
-            <div style={{ marginTop: 10, color: "var(--muted)", fontSize: 12 }}>
-              To use real accounts, switch to production credentials in <code>backend/.env</code> and <code>frontend/.env</code>.
+            <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(99,102,241,0.08)", borderRadius: 6, border: "1px solid rgba(99,102,241,0.2)", fontSize: 12 }}>
+              <strong>Faster alternative:</strong> Go to <strong>Dev Tools → Link All Merchants</strong> to pull ~820 transactions instantly without going through the SDK modal.
             </div>
           </div>
         )}

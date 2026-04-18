@@ -105,7 +105,17 @@ export default function DemoControls() {
         merchant_id: devLinkMerchantId,
       })
     );
-    // Refresh user ID so next run generates unique data
+    setDevLinkUserId(`prototype-user-${Date.now()}`);
+  }
+
+  async function devLinkAll() {
+    const MERCHANT_IDS = [19, 36, 44, 2125];
+    const baseUser = `bulk-user-${Date.now()}`;
+    for (const id of MERCHANT_IDS) {
+      await run(`knot_dev_link_${id}`, () =>
+        api.devLinkKnot({ external_user_id: `${baseUser}-${id}`, merchant_id: id })
+      );
+    }
     setDevLinkUserId(`prototype-user-${Date.now()}`);
   }
 
@@ -120,13 +130,9 @@ export default function DemoControls() {
 
   const MERCHANT_OPTIONS = [
     { id: 19, label: "DoorDash" },
-    { id: 44, label: "Amazon" },
-    { id: 45, label: "Walmart" },
     { id: 36, label: "Uber Eats" },
-    { id: 40, label: "Instacart" },
-    { id: 12, label: "Target" },
-    { id: 165, label: "Costco" },
-    { id: 41, label: "Gopuff" },
+    { id: 44, label: "Amazon" },
+    { id: 2125, label: "Shop Pay" },
   ];
 
   return (
@@ -187,66 +193,83 @@ export default function DemoControls() {
             padding: 24,
           }}
         >
-          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
-            🔗 Knot Dev Link — Real Transactions
-          </h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600 }}>🔗 Knot Dev Link — Pull Transactions</h2>
+            <span style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
+              background: "rgba(34,197,94,0.12)", color: "var(--success)",
+              border: "1px solid rgba(34,197,94,0.3)", borderRadius: 4, padding: "3px 8px",
+            }}>
+              DEVELOPMENT MODE
+            </span>
+          </div>
           <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            Calls <code>/development/accounts/link</code> to generate ~205 real SKU-level
-            transactions and immediately pulls them through the full pipeline.
-            No SDK or webhook setup needed.
+            Calls Knot's <code>/development/accounts/link</code> API to generate ~205 real SKU-level
+            transactions per merchant and immediately runs them through the full pipeline.
+            No SDK or webhook needed.
           </p>
+
+          {/* Link All button */}
+          <div style={{
+            background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.3)",
+            borderRadius: 8, padding: "14px 16px", marginBottom: 16,
+            display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
+          }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>Link All 4 Merchants at Once</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                DoorDash · Uber Eats · Amazon · Shop Pay — generates ~820 total transactions
+              </div>
+            </div>
+            <Btn
+              color="#6366f1"
+              disabled={loading !== null}
+              onClick={devLinkAll}
+            >
+              {loading?.startsWith("knot_dev_link_") ? "Linking all…" : "⚡ Link All Merchants"}
+            </Btn>
+          </div>
+
+          {/* Single merchant link */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-                EXTERNAL USER ID
-              </span>
+              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>USER ID</span>
               <input
                 value={devLinkUserId}
                 onChange={(e) => setDevLinkUserId(e.target.value)}
                 style={{
-                  padding: "8px 12px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface2)",
-                  color: "var(--text)",
-                  fontSize: 12,
-                  width: 220,
+                  padding: "8px 12px", borderRadius: 6,
+                  border: "1px solid var(--border)", background: "var(--surface2)",
+                  color: "var(--text)", fontSize: 12, width: 220,
                 }}
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-                MERCHANT
-              </span>
+              <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>MERCHANT</span>
               <select
                 value={devLinkMerchantId}
                 onChange={(e) => setDevLinkMerchantId(Number(e.target.value))}
                 style={{
-                  padding: "8px 12px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface2)",
-                  color: "var(--text)",
-                  fontSize: 12,
+                  padding: "8px 12px", borderRadius: 6,
+                  border: "1px solid var(--border)", background: "var(--surface2)",
+                  color: "var(--text)", fontSize: 12,
                 }}
               >
                 {MERCHANT_OPTIONS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} ({m.id})
-                  </option>
+                  <option key={m.id} value={m.id}>{m.label} (id:{m.id})</option>
                 ))}
               </select>
             </label>
             <Btn
-              color="#6366f1"
+              color="#4f46e5"
               disabled={loading !== null || !devLinkUserId}
               onClick={devLink}
             >
-              {loading === "knot_dev_link" ? "Linking & syncing…" : "⚡ Link & Pull Transactions"}
+              {loading === "knot_dev_link" ? "Linking…" : "Link One"}
             </Btn>
           </div>
           <p style={{ color: "var(--muted)", fontSize: 11, marginTop: 10 }}>
-            This may take 10–15 s while Knot generates sample data. Results appear in the log below.
+            Takes 10–20 s per merchant while Knot generates sample data. Check the log below for results.
           </p>
         </section>
 
